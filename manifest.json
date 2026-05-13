@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "X Timeline Physics",
+  "version": "0.2.0",
+  "description": "Drop visible X/Twitter timeline posts into a physics playground.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "vendor/matter.min.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "https://x.com/*",
+    "https://twitter.com/*"
+  ]
+}
