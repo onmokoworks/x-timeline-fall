@@ -21,7 +21,18 @@
   };
 
   let state = null;
+  let settling = false;
   let mode = localStorage.getItem(MODE_KEY) === MODES.ALL ? MODES.ALL : MODES.TWEETS;
+  let themeObserver = null;
+
+  function syncTheme() {
+    const controls = document.getElementById("xtp-controls");
+    if (!controls) return;
+
+    const scheme = document.documentElement.getAttribute("data-color-scheme");
+    const isLight = scheme === "light" || (!scheme && window.matchMedia("(prefers-color-scheme: light)").matches);
+    controls.classList.toggle("xtp-theme-light", isLight);
+  }
 
   function installButton() {
     if (document.getElementById("xtp-controls")) return;
@@ -43,6 +54,13 @@
 
     controls.append(modeButton, button);
     document.documentElement.appendChild(controls);
+    syncTheme();
+
+    if (!themeObserver) {
+      themeObserver = new MutationObserver(syncTheme);
+      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-color-scheme"] });
+      window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", syncTheme);
+    }
     updateButtons();
   }
 
@@ -55,7 +73,7 @@
   }
 
   function start() {
-    if (state || !Matter) return;
+    if (state || settling || !Matter) return;
 
     const pieces = collectPieces(mode);
     if (pieces.length === 0) {
@@ -116,6 +134,8 @@
       wrapper.style.width = `${rect.width}px`;
       wrapper.style.height = `${rect.height}px`;
       wrapper.style.setProperty("--xtp-card-bg", getElementBackground(piece.node));
+      const br = getComputedStyle(piece.node).borderRadius;
+      if (br && br !== "0px") wrapper.style.borderRadius = br;
       layer.appendChild(wrapper);
 
       piece.node.classList.add("xtp-inner");
@@ -131,7 +151,7 @@
       body.xtpElement = wrapper;
       bodies.push(body);
 
-      return { node: piece.node, wrapper, body, placeholder, original };
+      return { node: piece.node, wrapper, body, placeholder, original, rect, scrollOff: getScrollOffsets(piece.node) };
     });
 
     const walls = createWalls();
@@ -177,28 +197,64 @@
     current.render.canvas.remove();
     current.render.textures = {};
 
+    settling = true;
+    let pending = current.records.length;
+
+    function done() {
+      current.layer.remove();
+      document.documentElement.classList.remove("xtp-running");
+      settling = false;
+      updateButtons();
+    }
+
     current.records.forEach((record) => {
-      record.node.classList.remove("xtp-inner");
-      if (record.original.style === null) {
-        record.node.removeAttribute("style");
-      } else {
-        record.node.setAttribute("style", record.original.style);
-      }
-      record.node.className = record.original.className;
-
-      if (record.placeholder.parentNode) {
-        record.placeholder.parentNode.insertBefore(record.node, record.placeholder);
-        record.placeholder.remove();
-      } else if (record.original.parent) {
-        record.original.parent.insertBefore(record.node, record.original.nextSibling);
+      const placeholder = record.placeholder;
+      if (!placeholder.parentNode) {
+        restoreRecord(record);
+        record.wrapper.remove();
+        pending--;
+        if (pending === 0) done();
+        return;
       }
 
-      record.wrapper.remove();
+      const docX = record.rect.left + record.scrollOff.sx;
+      const docY = record.rect.top + record.scrollOff.sy;
+      const cur = getScrollOffsets(placeholder);
+      const tx = docX - cur.sx;
+      const ty = docY - cur.sy;
+      record.wrapper.style.transition = "transform 0.4s ease-in-out";
+      record.wrapper.style.transform = `translate3d(${tx}px, ${ty}px, 0) rotate(0rad)`;
+
+      let finished = false;
+      function onFinish() {
+        if (finished) return;
+        finished = true;
+        restoreRecord(record);
+        record.wrapper.remove();
+        pending--;
+        if (pending === 0) done();
+      }
+
+      record.wrapper.addEventListener("transitionend", onFinish, { once: true });
+      setTimeout(onFinish, 500);
     });
+  }
 
-    current.layer.remove();
-    document.documentElement.classList.remove("xtp-running");
-    updateButtons();
+  function restoreRecord(record) {
+    record.node.classList.remove("xtp-inner");
+    if (record.original.style === null) {
+      record.node.removeAttribute("style");
+    } else {
+      record.node.setAttribute("style", record.original.style);
+    }
+    record.node.className = record.original.className;
+
+    if (record.placeholder.parentNode) {
+      record.placeholder.parentNode.insertBefore(record.node, record.placeholder);
+      record.placeholder.remove();
+    } else if (record.original.parent) {
+      record.original.parent.insertBefore(record.node, record.original.nextSibling);
+    }
   }
 
   function collectPieces(currentMode) {
@@ -217,6 +273,7 @@
     selectors.forEach((selector) => {
       document.querySelectorAll(selector).forEach((node) => {
         if (node.closest("#xtp-toggle") || node.closest("#xtp-layer")) return;
+        if (!isNodeVisible(node)) return;
 
         const rect = node.getBoundingClientRect();
         if (!isUsableRect(rect)) return;
@@ -254,6 +311,7 @@
       document.querySelectorAll(selector).forEach((node) => {
         if (node.closest("#xtp-controls") || node.closest("#xtp-layer")) return;
         if (node === document.body || node === document.documentElement) return;
+        if (!isNodeVisible(node)) return;
 
         const rect = node.getBoundingClientRect();
         if (!isUsableAllRect(rect)) return;
@@ -291,6 +349,25 @@
     if (rect.bottom < 0 || rect.top > window.innerHeight) return false;
     if (rect.right < 0 || rect.left > window.innerWidth) return false;
     return true;
+  }
+
+  function isNodeVisible(node) {
+    if (node.offsetParent === null) return false;
+    const style = getComputedStyle(node);
+    if (style.visibility === "hidden" || style.opacity === "0") return false;
+    return true;
+  }
+
+  function getScrollOffsets(el) {
+    let sx = window.scrollX || 0;
+    let sy = window.scrollY || 0;
+    let parent = el.parentElement;
+    while (parent) {
+      sx += parent.scrollLeft || 0;
+      sy += parent.scrollTop || 0;
+      parent = parent.parentElement;
+    }
+    return { sx, sy };
   }
 
   function isUsableAllRect(rect) {
